@@ -160,6 +160,7 @@ class DisplayLibrary
         static int getDefault( lua_State *L );
         static int setDefault( lua_State *L );
         static int getCurrentStage( lua_State *L );
+        static int isValidObject( lua_State *L );
         static int collectOrphans( lua_State *L );
         static int setStatusBar( lua_State *L );
         static int capture( lua_State *L );
@@ -240,6 +241,7 @@ DisplayLibrary::Open( lua_State *L )
         { "getDefault", getDefault },
         { "setDefault", setDefault },
         { "getCurrentStage", getCurrentStage },
+        { "isValidObject", isValidObject },
         { "_collectOrphans", collectOrphans },
         { "setStatusBar", setStatusBar },
         { "capture", capture },
@@ -2286,6 +2288,61 @@ DisplayLibrary::getCurrentStage( lua_State *L )
     Display& display = library->GetDisplay();
 
     return display.GetStage()->GetProxy()->PushTable( L );
+}
+
+// Returns whether the argument is a usable display object: its native object
+// exists, it was not flagged invalid at creation, and neither it nor any
+// ancestor has been removed (removed objects are parented into an orphanage).
+int
+DisplayLibrary::isValidObject( lua_State *L )
+{
+    bool isValid = false;
+
+    if ( lua_istable( L, 1 ) && LuaProxy::IsProxy( L, 1 ) )
+    {
+        DisplayObject *object = (DisplayObject*)LuaProxy::GetProxyableObject( L, 1 );
+
+        if ( object )
+        {
+            // Set by newImage/newImageRect when the image file could not be decoded
+            lua_pushstring( L, "_isInvalid" );
+            lua_rawget( L, 1 );
+            bool isInvalid = lua_toboolean( L, -1 );
+            lua_pop( L, 1 );
+
+            if ( ! isInvalid )
+            {
+                Self *library = ToLibrary( L );
+                Display& display = library->GetDisplay();
+
+                // Walk to the hierarchy root; parentless internal groups
+                // (snapshot.group/snapshot.canvas) continue from their owner.
+                DisplayObject *root = object;
+                for ( ;; )
+                {
+                    DisplayObject *next = root->GetParent();
+
+                    if ( ! next )
+                    {
+                        GroupObject *group = root->AsGroupObject();
+                        next = group ? group->GetOwner() : NULL;
+                    }
+
+                    if ( ! next )
+                    {
+                        break;
+                    }
+
+                    root = next;
+                }
+
+                isValid = root != display.Orphanage() && root != display.HitTestOrphanage();
+            }
+        }
+    }
+
+    lua_pushboolean( L, isValid );
+    return 1;
 }
 
 /*
